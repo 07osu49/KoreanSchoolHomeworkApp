@@ -1,0 +1,24 @@
+import {DatabaseSync} from 'node:sqlite';import assert from 'node:assert/strict';import fs from 'node:fs';import {build} from 'esbuild';
+fs.mkdirSync('.sites-runtime/tests',{recursive:true});await build({entryPoints:['server/exchange.ts'],outfile:'.sites-runtime/tests/exchange.mjs',format:'esm',platform:'node'});const {handleExchange}=await import('../.sites-runtime/tests/exchange.mjs');
+const sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync('drizzle/0000_outstanding_sentinels.sql','utf8'));
+function statement(sql,values=[]){return {bind(...v){return statement(sql,v)},async first(){return sqlite.prepare(sql).get(...values)||null},async all(){return {results:sqlite.prepare(sql).all(...values)}},async run(){return {meta:sqlite.prepare(sql).run(...values)}}}}
+const objects=new Map();const env={DB:{prepare:statement,async batch(statements){sqlite.exec('BEGIN');try{const results=[];for(const s of statements)results.push(await s.run());sqlite.exec('COMMIT');return results}catch(e){sqlite.exec('ROLLBACK');throw e}}},BUCKET:{async put(k,data){objects.set(k,data)},async get(k){return objects.has(k)?{body:objects.get(k)}:null},async delete(k){objects.delete(k)}}};
+const teacher={userId:'teacher-A',displayName:'Teacher A',email:'a@example.test'},otherTeacher={userId:'teacher-B',displayName:'Teacher B',email:'b@example.test'},parent={userId:'parent-A',displayName:'Parent A',email:'p@example.test'},otherParent={userId:'parent-B',displayName:'Parent B',email:'q@example.test'};
+async function request(user,action,{body,form,origin='https://school.test'}={}){const method=body||form?'POST':'GET';const headers={};if(method==='POST')headers.Origin=origin;if(body)headers['Content-Type']='application/json';return handleExchange(new Request('https://school.test/api/exchange?action='+action,{method,headers,body:form||body&&JSON.stringify(body)}),env,user)}
+assert.equal((await request(null,'me')).status,401);
+const invite=await (await request(teacher,'invite',{body:{name:'Mina'}})).json();const id=invite.student.id;
+assert.equal((await request(teacher,'join',{body:{code:invite.code}})).status,400);
+assert.equal((await request(parent,'join',{body:{code:invite.code}})).status,200);
+assert.equal((await request(otherParent,'join',{body:{code:invite.code}})).status,400);
+assert.equal((await request(otherTeacher,'messages&student='+id)).status,404);assert.equal((await request(otherParent,'messages&student='+id)).status,404);
+assert.equal((await request(parent,'invite',{body:{name:'x'},origin:'https://evil.test'})).status,403);
+const form=new FormData();form.set('student',id);form.set('body','Here is homework');form.append('files',new File(['photo-data'],'Mina.jpg',{type:'image/jpeg'}));assert.equal((await request(parent,'send',{form})).status,201);
+const msgs=await (await request(teacher,'messages&student='+id)).json();assert.equal(msgs.messages.length,1);assert.equal(msgs.messages[0].sender_role,'parent');const fileId=msgs.messages[0].attachments[0].id;
+assert.equal((await request(otherTeacher,'file&id='+fileId)).status,404);assert.equal((await request(otherParent,'file&id='+fileId)).status,404);assert.equal(await (await request(teacher,'file&id='+fileId)).text(),'photo-data');
+const reply=new FormData();reply.set('student',id);reply.set('body','Good job');assert.equal((await request(teacher,'send',{form:reply})).status,201);const all=await (await request(parent,'messages&student='+id)).json();assert.equal(all.messages.length,2);assert.equal(all.messages[1].sender_role,'teacher');
+const denied=new FormData();denied.set('student',id);denied.set('body','hijack');assert.equal((await request(otherTeacher,'send',{form:denied})).status,404);
+const bad=new FormData();bad.set('student',id);bad.append('files',new File(['<svg/>'],'bad.svg',{type:'image/svg+xml'}));assert.equal((await request(parent,'send',{form:bad})).status,400);
+const invite2=await (await request(teacher,'invite',{body:{name:'Jin'}})).json();const renewed=await (await request(teacher,'renew',{body:{student:invite2.student.id}})).json();assert.equal((await request(otherParent,'join',{body:{code:invite2.code}})).status,400);assert.equal((await request(otherParent,'join',{body:{code:renewed.code}})).status,200);
+const invite3=await (await request(teacher,'invite',{body:{name:'Race'}})).json();const claims=await Promise.all([request(parent,'join',{body:{code:invite3.code}}),request(otherParent,'join',{body:{code:invite3.code}})]);assert.equal(claims.filter(r=>r.status===200).length,1);
+const mine=await (await request(otherTeacher,'me')).json();assert.equal(mine.students.length,0);
+console.log('PASS: signed-in boundary, one-time pairing, renewal, concurrent claim protection, parent/teacher isolation, authorized uploads/replies/downloads, cross-origin write rejection, unsupported file rejection.');

@@ -1,23 +1,16 @@
-# 콜럼버스 한국학교 — Korean School Homework App
+# 콜럼버스 한국학교
 
-Web app for iPhone, Android, and desktop. Record voice memos, capture photos and videos, organize by last saved date, and share multiple selected files through your device's share menu.
+Live capture app: https://work-station.truecoot2.chatgpt.site
+Private parent/teacher exchange: https://work-station.truecoot2.chatgpt.site/school
 
-Live web version: https://work-station.truecoot2.chatgpt.site
+The connected application source is in `online/`. It uses the Sites authentication integration, D1 for student connections and conversations, and private R2 storage for uploads. Teachers create one-time invitations for named students; parents accept those invitations using their own signed-in accounts. Each parent exchanges files only with the assigned teacher for that child.
 
-## Run locally
+Existing device-local capture files are not automatically uploaded. In the live app, select captures and choose Send to teacher after pairing. The exchange also accepts photos, videos, voice recordings, and private teacher replies. Upload limits are eight files and 50 MB total per message.
 
-Serve this folder using `python3 -m http.server 8080`, then visit `http://localhost:8080`. Camera and microphone require HTTPS or localhost. For a phone, use the HTTPS live version.
+## Source and backups
 
-## GitHub Pages
+- `online/`: complete connected application, schema migrations, and access-control tests. See `online/README.md` for build and setup instructions.
+- Root `index.html`, `app.js`, and supporting files: original four-student device-local capture app, usable with a static server or GitHub Pages. Private exchange requires the live Sites server and is not supported by static GitHub Pages.
+- `backups/`: preserved original source archives from the initial five versions. Subsequent source changes are preserved in Git history.
 
-In this repository, open Settings → Pages. Choose Deploy from a branch, then main and / (root). The expected URL after GitHub finishes deploying is https://07osu49.github.io/KoreanSchoolHomeworkApp/.
-
-## Files and privacy
-
-Captures are saved in IndexedDB on the current device and browser. They are not uploaded to GitHub or synced between devices. Download captures to keep your own backup. Native file sharing lists only installed apps that accept the selected file types.
-
-New capture names use the device's local date, for example `2026-10-12 - Eina - photo`. Duplicate attachment names receive numbered suffixes when sharing together.
-
-## App source backups
-
-`backups/` contains every app source version created during this session. These backups contain source code, not phone recordings or photos. See `backups/README.md` for version details.
+No personal photos, recordings, or account credentials are stored in this repository.
