@@ -1,4 +1,4 @@
-const CACHE='work-station-github-v1';
+const CACHE='work-station-github-v2';
 const BASE=new URL('./',self.location.href);
 const ASSETS=['./','index.html','app.js','icon.svg','manifest.json'].map(p=>new URL(p,BASE).href);
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)));self.skipWaiting()});

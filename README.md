@@ -1,4 +1,4 @@
-# Work Station — Korean School Homework App
+# 콜럼버스 한국학교 — Korean School Homework App
 
 Web app for iPhone, Android, and desktop. Record voice memos, capture photos and videos, organize by last saved date, and share multiple selected files through your device's share menu.
 
