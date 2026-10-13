@@ -1,7 +1,13 @@
 'use strict';
 // Uses the capture app's IndexedDB and profile state; never puts files in GitHub.
 const backupButton=make('button','outline','Update / Back up');backupButton.id='cloud-backup-open';
-document.querySelector('.head-actions').prepend(backupButton);
+const APP_UPDATED_AT='2026-10-13T17:54:54Z';
+const backupGroup=make('div');backupGroup.style.cssText='display:flex;flex-direction:column;align-items:center;gap:6px';
+const backupDates=make('div');backupDates.id='cloud-backup-dates';backupDates.style.cssText='text-align:center;font-size:10px;line-height:1.5;color:var(--muted);max-width:210px';
+const appUpdatedLabel=make('div'),lastBackupLabel=make('div');lastBackupLabel.id='cloud-backup-last-saved';
+function backupDateLabel(date){return new Date(date).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+' ET'}
+appUpdatedLabel.textContent='App updated: '+backupDateLabel(APP_UPDATED_AT)+' · V29';lastBackupLabel.textContent='Last backup: checking…';
+backupDates.append(appUpdatedLabel,lastBackupLabel);backupGroup.append(backupDates,backupButton);document.querySelector('.head-actions').prepend(backupGroup);
 const autoBackupLabel=make('p','footnote','Auto backup: checking…');autoBackupLabel.id='auto-backup-status';
 document.querySelector('.library-head').after(autoBackupLabel);
 const backupDialog=make('dialog','modal');backupDialog.id='cloud-backup-dialog';
@@ -17,7 +23,7 @@ function rememberBackup(snapshot,fingerprint){const baseline={snapshot,fingerpri
 async function backupFingerprint(manifest){const normalized={...manifest,files:[...manifest.files].sort((a,b)=>a.id.localeCompare(b.id)),memos:Object.fromEntries(Object.entries(manifest.memos).sort(([a],[b])=>a.localeCompare(b)))};delete normalized.expectedSnapshot;const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(normalized)));return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');}
 async function localBackupData(){const records=await transact('readonly',s=>s.getAll());const entries=records.map(r=>({record:r,blob:r.blob||new Blob([r.data],{type:r.mimeType||'application/octet-stream'})}));return {entries,manifest:{version:1,studentCount,studentNames:[...studentNames],teacherNames:[...teacherNames],memos:{...weeklyHomeworkMemos},files:entries.map(({record:r,blob})=>({id:r.id,name:r.name,originalName:r.originalName||'',studentId:r.studentId||'student-1',type:r.type,mimeType:blob.type||'application/octet-stream',savedAt:r.savedAt,size:blob.size}))}};}
 const backupStatus=text=>{$('cloud-backup-status').textContent=text};
-function backupControls(busy){backupBusy=busy;$('cloud-backup-save').disabled=busy||!cloudBackupInfo;$('cloud-backup-restore').disabled=busy||!cloudBackupInfo?.backup;$('cloud-backup-close').disabled=busy;}
+function backupControls(busy){backupBusy=busy;$('cloud-backup-save').disabled=busy||!cloudBackupInfo;$('cloud-backup-restore').disabled=busy||!cloudBackupInfo?.backup;$('cloud-backup-close').disabled=busy;lastBackupLabel.textContent=cloudBackupInfo?.backup?'Last backup: '+backupDateLabel(cloudBackupInfo.backup.savedAt):cloudBackupInfo?'Last backup: not yet':'Last backup: sign in to view';}
 async function backupJSON(action,body,params={}){
  const query=new URLSearchParams({action,...params}),options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
  const response=await fetch('/api/backup?'+query,{...options,cache:'no-store'});let data;try{data=await response.json()}catch{throw new Error('Cloud backup requires the online app and an internet connection.')}if(!response.ok)throw Object.assign(new Error(data.error||'Could not connect to cloud backup.'),{status:response.status});return data;
@@ -49,7 +55,7 @@ async function runCloudBackup(automatic=false){
    if(!response.ok){const error=await response.json();throw new Error(error.error||'File upload failed.');}
   }
   const result=await backupJSON('complete',{}, {snapshot});cloudBackupInfo.backup=result;rememberBackup(snapshot,fingerprint);autoBackupStatus('saved · '+new Date(result.savedAt).toLocaleString());backupStatus('Backup complete · '+result.count+' file(s).\n'+new Date(result.savedAt).toLocaleString()+'\nOn another device, sign in with the same account and choose Restore.');if(!automatic)toast('Private cloud backup saved.');
- }catch(e){autoBackupStatus(e.status===401?'sign in once using Update / Back up.':e.status===409?'newer cloud backup available — restore first.':'pending — '+e.message+' Retry when you reopen or reconnect.');backupStatus(e.message+'\nYour device files were kept. An unfinished backup does not replace your previous completed backup.');}
+ }catch(e){if(e.status===401)cloudBackupInfo=null;autoBackupStatus(e.status===401?'sign in once using Update / Back up.':e.status===409?'newer cloud backup available — restore first.':'pending — '+e.message+' Retry when you reopen or reconnect.');backupStatus(e.message+'\nYour device files were kept. An unfinished backup does not replace your previous completed backup.');}
  finally{backupControls(false);if(autoBackupQueued){autoBackupQueued=false;scheduleAutoBackup();}applyAppUpdateWhenSafe();}
 }
 $('cloud-backup-save').onclick=()=>runCloudBackup(false);
@@ -69,6 +75,7 @@ $('cloud-backup-restore').onclick=async()=>{
   try{for(const [key,value] of Object.entries(values))localStorage.setItem(key,value);}catch(e){for(const [key,value] of Object.entries(previous)){try{if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);}catch{}}throw new Error('Files restored, but device storage could not save names and notes. Free some device space and retry.');}
   for(let i=0;i<4;i++){studentNames[i]=manifest.studentNames[i];teacherNames[i]=manifest.teacherNames[i];}studentCount=manifest.studentCount;activeStudent=0;weeklyHomeworkMemos=manifest.memos;selectedIds.clear();updateStudentTabs();await reload();
   const restoredContent={version:1,studentCount:manifest.studentCount,studentNames:manifest.studentNames,teacherNames:manifest.teacherNames,memos:manifest.memos,files:manifest.files.map(({storageSnapshot,...file})=>file)};rememberBackup(manifest.snapshot,await backupFingerprint(restoredContent));autoBackupStatus('restored · '+new Date(manifest.savedAt).toLocaleString());
+  cloudBackupInfo.backup={snapshot:manifest.snapshot,savedAt:manifest.savedAt,count:manifest.files.length};
   backupStatus('Restore complete. '+restored+' missing file(s) added.\nStudent names, teacher names, and weekly notes restored. Existing device files were kept.');toast('Cloud backup restored.');
  }catch(e){backupStatus(e.message+'\nFiles already restored are kept. Retry Restore to continue.');}
  finally{backupControls(false);if(autoBackupQueued){autoBackupQueued=false;scheduleAutoBackup();}}

@@ -67,6 +67,7 @@ export async function handleBackup(request:Request,env:Bindings,user:User|null):
    for(const f of m.files){const obj=await bucket.head(root+(f.storageSnapshot||snapshot)+'/files/'+f.id);if(!obj||obj.size!==f.size)return json({error:'Some files have not finished uploading. Your previous backup is still available.'},409);}
    const pointer=await bucket.head(latestKey);if((pointer?.etag||null)!==m.baseEtag)return json({error:'Another device updated your cloud backup. Restore the newer backup before continuing.'},409);
    delete m.baseEtag;
+   m.savedAt=Date.now();
    await bucket.put(root+snapshot+'/manifest.json',JSON.stringify(m));
    const updated=await bucket.put(latestKey,JSON.stringify({snapshot,savedAt:m.savedAt,count:m.files.length}),{onlyIf:pointer?{etagMatches:pointer.etag}:{etagDoesNotMatch:'*'}});
    if(!updated)return json({error:'Another device updated your cloud backup. Restore the newer backup before continuing.'},409);
