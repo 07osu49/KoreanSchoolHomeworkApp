@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {build} from 'esbuild';
+fs.mkdirSync('.sites-runtime/tests',{recursive:true});
+await build({entryPoints:['server/backup.ts'],outfile:'.sites-runtime/tests/backup.mjs',format:'esm',platform:'node'});
+const {handleBackup,validBackup}=await import('../.sites-runtime/tests/backup.mjs');
+const objects=new Map();let failUpload=false;
+const bucket={async put(key,value){if(failUpload&&key.includes('/files/'))throw Error('Offline');objects.set(key,typeof value==='string'?new TextEncoder().encode(value):new Uint8Array(value));},async get(key){const data=objects.get(key);return data?{body:data,json:async()=>JSON.parse(new TextDecoder().decode(data))}:null;},async head(key){const data=objects.get(key);return data?{size:data.length}:null;},async delete(key){objects.delete(key);}};
+const alice={userId:'alice',displayName:'Alice'},bob={userId:'bob',displayName:'Bob'};
+async function call(user,action,{body,params={},origin='https://school.test'}={}){
+ const headers=body===undefined?{}:{origin};const value=body===undefined?undefined:typeof body==='string'?body:JSON.stringify(body);
+ return handleBackup(new Request('https://school.test/api/backup?'+new URLSearchParams({action,...params}),{method:body===undefined?'GET':'POST',headers,body:value}),{BUCKET:bucket},user);
+}
+const manifest={version:1,studentCount:2,studentNames:['Mina','Jin','',''],teacherNames:['Hana','Sun','',''],memos:{'student-1:2026-10-12':'읽기 숙제'},files:[{id:'photo-1',name:'2026-10-13 - Tue - Mina - photo',originalName:'Mina.jpg',studentId:'student-1',type:'image',mimeType:'image/jpeg',savedAt:Date.now(),size:5}]};
+assert(validBackup(manifest));assert(!validBackup({...manifest,files:[...manifest.files,...manifest.files]}));assert(!validBackup({...manifest,studentCount:5}));assert(!validBackup({...manifest,files:[{...manifest.files[0],size:51*1024*1024}]}));
+assert.equal((await call(null,'status')).status,401);assert.equal((await call(alice,'begin',{body:manifest,origin:'https://evil.test'})).status,403);
+assert.equal((await (await call(alice,'status')).json()).backup,null);
+const {snapshot}=await (await call(alice,'begin',{body:manifest})).json();
+assert.equal((await call(bob,'upload',{body:'hello',params:{snapshot,id:'photo-1'}})).status,404);
+assert.equal((await call(alice,'complete',{body:{},params:{snapshot}})).status,409);
+assert.equal((await (await call(alice,'status')).json()).backup,null);
+assert.equal((await call(alice,'upload',{body:'oops',params:{snapshot,id:'photo-1'}})).status,400);
+assert.equal((await call(alice,'upload',{body:'hello',params:{snapshot,id:'photo-1'}})).status,200);
+assert.equal((await call(alice,'complete',{body:{},params:{snapshot}})).status,200);
+assert.equal((await (await call(alice,'status')).json()).backup.count,1);
+const restored=await (await call(alice,'manifest')).json();assert.deepEqual(restored.memos,manifest.memos);assert.deepEqual(restored.studentNames,manifest.studentNames);
+assert.equal(await (await call(alice,'file',{params:{snapshot,id:'photo-1'}})).text(),'hello');
+assert.equal((await call(bob,'manifest',{params:{snapshot}})).status,404);assert.equal((await call(bob,'file',{params:{snapshot,id:'photo-1'}})).status,404);
+const second=await (await call(alice,'begin',{body:manifest})).json();failUpload=true;assert.equal((await call(alice,'upload',{body:'hello',params:{snapshot:second.snapshot,id:'photo-1'}})).status,500);failUpload=false;
+assert.equal((await (await call(alice,'manifest')).json()).snapshot,snapshot);
+assert.equal((await call(alice,'file',{params:{snapshot,id:'../latest.json'}})).status,404);
+console.log('PASS: authentication, account isolation, origin protection, backup validation, incomplete/failed upload preserves previous backup, names/notes/files round trip.');
