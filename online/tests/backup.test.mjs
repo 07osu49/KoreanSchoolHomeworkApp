@@ -4,8 +4,8 @@ import {build} from 'esbuild';
 fs.mkdirSync('.sites-runtime/tests',{recursive:true});
 await build({entryPoints:['server/backup.ts'],outfile:'.sites-runtime/tests/backup.mjs',format:'esm',platform:'node'});
 const {handleBackup,validBackup}=await import('../.sites-runtime/tests/backup.mjs');
-const objects=new Map();let failUpload=false;
-const bucket={async put(key,value){if(failUpload&&key.includes('/files/'))throw Error('Offline');objects.set(key,typeof value==='string'?new TextEncoder().encode(value):new Uint8Array(value));},async get(key){const data=objects.get(key);return data?{body:data,json:async()=>JSON.parse(new TextDecoder().decode(data))}:null;},async head(key){const data=objects.get(key);return data?{size:data.length}:null;},async delete(key){objects.delete(key);}};
+const objects=new Map(),etags=new Map();let failUpload=false,etagCounter=0;
+const bucket={async put(key,value,options={}){if(failUpload&&key.includes('/files/'))throw Error('Offline');if(options.onlyIf?.etagMatches&&etags.get(key)!==options.onlyIf.etagMatches)return null;if(options.onlyIf?.etagDoesNotMatch==='*'&&objects.has(key))return null;objects.set(key,typeof value==='string'?new TextEncoder().encode(value):new Uint8Array(value));etags.set(key,String(++etagCounter));return {etag:etags.get(key)};},async get(key){const data=objects.get(key);return data?{body:data,etag:etags.get(key),json:async()=>JSON.parse(new TextDecoder().decode(data))}:null;},async head(key){const data=objects.get(key);return data?{size:data.length,etag:etags.get(key)}:null;},async delete(key){objects.delete(key);etags.delete(key);}};
 const alice={userId:'alice',displayName:'Alice'},bob={userId:'bob',displayName:'Bob'};
 async function call(user,action,{body,params={},origin='https://school.test'}={}){
  const headers=body===undefined?{}:{origin};const value=body===undefined?undefined:typeof body==='string'?body:JSON.stringify(body);
@@ -30,3 +30,10 @@ const second=await (await call(alice,'begin',{body:manifest})).json();failUpload
 assert.equal((await (await call(alice,'manifest')).json()).snapshot,snapshot);
 assert.equal((await call(alice,'file',{params:{snapshot,id:'../latest.json'}})).status,404);
 console.log('PASS: authentication, account isolation, origin protection, backup validation, incomplete/failed upload preserves previous backup, names/notes/files round trip.');
+assert.equal((await call(alice,'begin',{body:{...manifest,expectedSnapshot:'stale-snapshot'}})).status,409);
+const reuse=await (await call(alice,'begin',{body:{...manifest,expectedSnapshot:snapshot}})).json();assert.deepEqual(reuse.uploadIds,[]);
+const concurrent=await (await call(alice,'begin',{body:{...manifest,expectedSnapshot:snapshot}})).json();
+assert.equal((await call(alice,'complete',{body:{},params:{snapshot:reuse.snapshot}})).status,200);
+assert.equal((await call(alice,'complete',{body:{},params:{snapshot:concurrent.snapshot}})).status,409);
+assert.equal(await (await call(alice,'file',{params:{id:'photo-1'}})).text(),'hello');
+console.log('PASS: unchanged files reused without another upload, stale device and simultaneous backup conflict protection.');

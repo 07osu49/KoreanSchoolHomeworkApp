@@ -28,7 +28,7 @@ export async function handleBackup(request:Request,env:Bindings,user:User|null):
  try{
   if(request.method==='GET'&&action==='status'){
    const obj=await bucket.get(latestKey),latest:any=obj?await obj.json():null;
-   return json({user:user.displayName,backup:latest?{savedAt:latest.savedAt,count:latest.count}:null});
+   return json({user:user.displayName,accountKey:hash,backup:latest?{snapshot:latest.snapshot,savedAt:latest.savedAt,count:latest.count}:null});
   }
   if(request.method==='GET'&&(action==='manifest'||action==='file')){
    const pointer=await bucket.get(latestKey);if(!pointer)return json({error:'No cloud backup yet.'},404);
@@ -38,15 +38,21 @@ export async function handleBackup(request:Request,env:Bindings,user:User|null):
    const obj=await bucket.get(root+snapshot+'/manifest.json');if(!obj)return json({error:'Backup not found.'},404);const m:any=await obj.json();
    if(action==='manifest')return json(m);
    const id=url.searchParams.get('id'),f=m.files.find((f:any)=>f.id===id);if(!f)return json({error:'File not found.'},404);
-   const file=await bucket.get(root+snapshot+'/files/'+f.id);if(!file)return json({error:'File not found.'},404);
+   const file=await bucket.get(root+(f.storageSnapshot||snapshot)+'/files/'+f.id);if(!file)return json({error:'File not found.'},404);
    return new Response(file.body,{headers:{'Content-Type':'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
   }
   if(request.method!=='POST')return json({error:'Unknown request.'},404);
   if(action==='begin'){
    if(Number(request.headers.get('content-length'))>5*1024*1024)return json({error:'Backup information is too large.'},413);
    const m=JSON.parse(new TextDecoder().decode(await boundedBytes(request,5*1024*1024)));if(!validBackup(m))return json({error:'Backup supports up to 1,000 files, 50 MB per file, and 500 MB total. Check student information and file names.'},400);
-   const snapshot=crypto.randomUUID(),manifest={version:1,studentCount:m.studentCount,studentNames:m.studentNames,teacherNames:m.teacherNames,memos:m.memos,files:m.files.map((f:any)=>({id:f.id,name:f.name,originalName:f.originalName,studentId:f.studentId,type:f.type,mimeType:f.mimeType,savedAt:f.savedAt,size:f.size})),snapshot,savedAt:Date.now()};
-   await bucket.put(root+snapshot+'/pending.json',JSON.stringify(manifest));return json({snapshot});
+   const pointer=await bucket.get(latestKey),latest:any=pointer?await pointer.json():null;
+   if(m.expectedSnapshot!==undefined&&m.expectedSnapshot!==(latest?.snapshot||null))return json({error:'A newer cloud backup is available. Restore it before automatic backup continues.'},409);
+   const previous=latest?await bucket.get(root+latest.snapshot+'/manifest.json'):null,old:any=previous?await previous.json():null;
+   const snapshot=crypto.randomUUID(),manifest={version:1,studentCount:m.studentCount,studentNames:m.studentNames,teacherNames:m.teacherNames,memos:m.memos,files:m.files.map((f:any)=>{
+    const same=old?.files.find((p:any)=>p.id===f.id&&p.size===f.size&&p.mimeType===f.mimeType);
+    return {id:f.id,name:f.name,originalName:f.originalName,studentId:f.studentId,type:f.type,mimeType:f.mimeType,savedAt:f.savedAt,size:f.size,...(same?{storageSnapshot:same.storageSnapshot||latest.snapshot}:{})};
+   }),snapshot,savedAt:Date.now(),baseEtag:pointer?.etag||null};
+   await bucket.put(root+snapshot+'/pending.json',JSON.stringify(manifest));return json({snapshot,uploadIds:manifest.files.filter((f:any)=>!f.storageSnapshot).map((f:any)=>f.id)});
   }
   const snapshot=url.searchParams.get('snapshot');if(!idOK(snapshot))return json({error:'Invalid backup.'},400);
   const pending=await bucket.get(root+snapshot+'/pending.json');if(!pending)return json({error:'Start a new backup.'},404);
@@ -58,10 +64,13 @@ export async function handleBackup(request:Request,env:Bindings,user:User|null):
    await bucket.put(root+snapshot+'/files/'+f.id,bytes);return json({ok:true});
   }
   if(action==='complete'){
-   for(const f of m.files){const obj=await bucket.head(root+snapshot+'/files/'+f.id);if(!obj||obj.size!==f.size)return json({error:'Some files have not finished uploading. Your previous backup is still available.'},409);}
+   for(const f of m.files){const obj=await bucket.head(root+(f.storageSnapshot||snapshot)+'/files/'+f.id);if(!obj||obj.size!==f.size)return json({error:'Some files have not finished uploading. Your previous backup is still available.'},409);}
+   const pointer=await bucket.head(latestKey);if((pointer?.etag||null)!==m.baseEtag)return json({error:'Another device updated your cloud backup. Restore the newer backup before continuing.'},409);
+   delete m.baseEtag;
    await bucket.put(root+snapshot+'/manifest.json',JSON.stringify(m));
-   await bucket.put(latestKey,JSON.stringify({snapshot,savedAt:m.savedAt,count:m.files.length}));
-   await bucket.delete(root+snapshot+'/pending.json');return json({ok:true,savedAt:m.savedAt,count:m.files.length});
+   const updated=await bucket.put(latestKey,JSON.stringify({snapshot,savedAt:m.savedAt,count:m.files.length}),{onlyIf:pointer?{etagMatches:pointer.etag}:{etagDoesNotMatch:'*'}});
+   if(!updated)return json({error:'Another device updated your cloud backup. Restore the newer backup before continuing.'},409);
+   await bucket.delete(root+snapshot+'/pending.json');return json({ok:true,snapshot,savedAt:m.savedAt,count:m.files.length});
   }
   return json({error:'Unknown request.'},404);
  }catch{return json({error:'Cloud backup failed. Your device files and previous completed backup are safe. Try again.'},500);}
